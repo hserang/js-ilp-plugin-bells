@@ -313,6 +313,86 @@ describe('PluginBells', function () {
       })
     })
 
+    describe('notification of timeout', function () {
+      beforeEach(function () {
+        this.stubReceive = sinon.stub()
+        this.stubFulfillExecutionCondition = sinon.stub()
+        this.stubReject = sinon.stub()
+        this.plugin.on('receive', this.stubReceive)
+        this.plugin.on('fulfill_execution_condition', this.stubFulfillExecutionCondition)
+        this.plugin.on('reject', this.stubReject)
+
+        this.fiveBellsTransferMike = {
+          id: 'http://red.example/transfers/ac518dfb-b8a6-49ef-b78d-5e26e81d7a45',
+          ledger: 'http://red.example',
+          debits: [{
+            account: 'http://red.example/accounts/alice',
+            amount: '10'
+          }],
+          credits: [{
+            account: 'http://red.example/accounts/mike',
+            amount: '10'
+          }],
+          state: 'rejected'
+        }
+        this.fiveBellsTransferAlice = {
+          id: 'http://red.example/transfers/ac518dfb-b8a6-49ef-b78d-5e26e81d7a45',
+          ledger: 'http://red.example',
+          debits: [{
+            account: 'http://red.example/accounts/mike',
+            amount: '10'
+          }],
+          credits: [{
+            account: 'http://red.example/accounts/alice',
+            amount: '10'
+          }],
+          state: 'rejected'
+        }
+
+        this.transfer = {
+          id: 'ac518dfb-b8a6-49ef-b78d-5e26e81d7a45',
+          direction: 'incoming',
+          account: 'http://red.example/accounts/alice',
+          amount: '10',
+          expiresAt: (new Date((new Date()).getTime() + 1000)).toISOString()
+        }
+      })
+
+      it('should handle a rejected transfer to mike', function * () {
+        this.wsRedLedger.send(JSON.stringify({
+          resource: Object.assign(this.fiveBellsTransferAlice, {
+            execution_condition: 'cc:0:3:vmvf6B7EpFalN6RGDx9F4f4z0wtOIgsIdCmbgv06ceI:7'
+          }),
+          related_resources: {
+            execution_condition_fulfillment: 'cf:0:ZXhlY3V0ZQ'
+          }
+        }))
+
+        yield new Promise((resolve) => this.wsRedLedger.on('message', resolve))
+
+        if (this.stubReceive) sinon.assert.notCalled(this.stubReceive)
+        sinon.assert.calledOnce(this.stubReject)
+        sinon.assert.notCalled(this.stubFulfillExecutionCondition)
+      })
+
+      it('should handle a rejected transfer to alice', function * () {
+        this.wsRedLedger.send(JSON.stringify({
+          resource: Object.assign(this.fiveBellsTransferMike, {
+            execution_condition: 'cc:0:3:vmvf6B7EpFalN6RGDx9F4f4z0wtOIgsIdCmbgv06ceI:7'
+          }),
+          related_resources: {
+            execution_condition_fulfillment: 'cf:0:ZXhlY3V0ZQ'
+          }
+        }))
+
+        yield new Promise((resolve) => this.wsRedLedger.on('message', resolve))
+
+        if (this.stubReceive) sinon.assert.notCalled(this.stubReceive)
+        sinon.assert.calledOnce(this.stubReject)
+        sinon.assert.notCalled(this.stubFulfillExecutionCondition)
+      })
+    })
+
     describe('notifications of incoming transfers', function () {
       beforeEach(function () {
         this.stubReceive = sinon.stub()
@@ -556,7 +636,7 @@ describe('PluginBells', function () {
         })
       })
 
-      it('throws an ExternalError on 400', function * () {
+      it('throws an ExternalError on 400', function (done) {
         nock('http://red.example')
           .put('/transfers/6851929f-5a91-4d02-b9f4-4ae6b7f1768c', {
             id: 'http://red.example/transfers/6851929f-5a91-4d02-b9f4-4ae6b7f1768c',
@@ -572,17 +652,16 @@ describe('PluginBells', function () {
             }]
           })
           .reply(400, {id: 'SomeError'})
-        try {
-          yield this.plugin.send({
-            id: '6851929f-5a91-4d02-b9f4-4ae6b7f1768c',
-            account: 'http://red.example/accounts/alice',
-            amount: '123'
-          })
-          assert(false)
-        } catch (err) {
-          assert(err instanceof ExternalError)
-          assert.equal(err.message, 'Remote error: status=400 body=[object Object]')
-        }
+
+        this.plugin.once('reject', (transfer, msg) => {
+          assert.equal(transfer.id, '6851929f-5a91-4d02-b9f4-4ae6b7f1768c')
+          done()
+        })
+        this.plugin.send({
+          id: '6851929f-5a91-4d02-b9f4-4ae6b7f1768c',
+          account: 'http://red.example/accounts/alice',
+          amount: '123'
+        })
       })
 
       it('sets up case notifications when "cases" is provided', function * () {
@@ -607,6 +686,40 @@ describe('PluginBells', function () {
           .reply(200)
 
         yield this.plugin.send({
+          id: '6851929f-5a91-4d02-b9f4-4ae6b7f1768c',
+          account: 'http://red.example/accounts/alice',
+          amount: '123',
+          cases: ['http://notary.example/cases/2cd5bcdb-46c9-4243-ac3f-79046a87a086']
+        })
+      })
+
+      it('handles unexpected status on cases notification', function (done) {
+        nock('http://notary.example/cases/2cd5bcdb-46c9-4243-ac3f-79046a87a086')
+          .post('/targets', ['http://red.example/transfers/6851929f-5a91-4d02-b9f4-4ae6b7f1768c/fulfillment'])
+          .reply(400)
+        nock('http://red.example')
+          .put('/transfers/6851929f-5a91-4d02-b9f4-4ae6b7f1768c', {
+            id: 'http://red.example/transfers/6851929f-5a91-4d02-b9f4-4ae6b7f1768c',
+            ledger: 'http://red.example',
+            debits: [{
+              account: 'http://red.example/accounts/mike',
+              amount: '123',
+              authorized: true
+            }],
+            credits: [{
+              account: 'http://red.example/accounts/alice',
+              amount: '123'
+            }],
+            additional_info: {cases: ['http://notary.example/cases/2cd5bcdb-46c9-4243-ac3f-79046a87a086']}
+          })
+          .reply(400)
+
+        this.plugin.once('reject', (transfer, msg) => {
+          assert.equal(transfer.id, '6851929f-5a91-4d02-b9f4-4ae6b7f1768c')
+          done()
+        })
+
+        this.plugin.send({
           id: '6851929f-5a91-4d02-b9f4-4ae6b7f1768c',
           account: 'http://red.example/accounts/alice',
           amount: '123',

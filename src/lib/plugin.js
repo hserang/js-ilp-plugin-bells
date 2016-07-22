@@ -193,6 +193,7 @@ class FiveBellsLedger extends EventEmitter2 {
       this.connection.disconnect()
       this.connection = null
     }
+    return Promise.resolve(null)
   }
 
   isConnected () {
@@ -330,17 +331,22 @@ class FiveBellsLedger extends EventEmitter2 {
         })
 
         if (res.statusCode !== 200) {
-          throw new Error('Unexpected status code: ' + res.statusCode)
+          this.emit('reject', transfer,
+            new Buffer('Unexpected status code: ' + res.statusCode))
         }
       }
     }
 
-    debug('submitting transfer %s', fiveBellsTransfer.id)
-    yield this._request({
-      method: 'put',
-      uri: fiveBellsTransfer.id,
-      body: fiveBellsTransfer
-    })
+    try {
+      debug('submitting transfer %s', fiveBellsTransfer.id)
+      yield this._request({
+        method: 'put',
+        uri: fiveBellsTransfer.id,
+        body: fiveBellsTransfer
+      })
+    } catch (err) {
+      this.emit('reject', transfer, new Buffer(err.toString()))
+    }
 
     // TODO: If already executed, fetch fulfillment and forward to source
 
@@ -413,6 +419,8 @@ class FiveBellsLedger extends EventEmitter2 {
             relatedResources.cancellation_condition_fulfillment) {
           yield this.emitAsync('fulfill_cancellation_condition', transfer,
             relatedResources.cancellation_condition_fulfillment)
+        } else if (fiveBellsTransfer.state === 'rejected') {
+          yield this.emitAsync('reject', transfer, 'transfer rejected.')
         }
       }
     }
@@ -450,6 +458,8 @@ class FiveBellsLedger extends EventEmitter2 {
             relatedResources && relatedResources.cancellation_condition_fulfillment) {
           yield this.emitAsync('fulfill_cancellation_condition', transfer,
             relatedResources.cancellation_condition_fulfillment)
+        } else if (fiveBellsTransfer.state === 'rejected') {
+          yield this.emitAsync('reject', transfer, 'transfer rejected.')
         }
       }
     }
